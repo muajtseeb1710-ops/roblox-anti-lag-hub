@@ -1,11 +1,23 @@
 
 --[[
-    mixmay_Hab_V1.7 Rayfield
-    FPS Counter + Anti-Lag + Anti-AFK + Shadows + Mouse TP
+    mixmay_Hab_V1.8 Rayfield
 
-    Removed:
-    - Skybox
-    - Hitbox ESP
+    Performance:
+    - FPS Counter
+    - Anti-Lag / Restore
+    - Shadows
+
+    Utility:
+    - Anti-AFK
+    - Mouse TP
+    - Hold Right Click (V)
+    - Auto Press (Z)
+    - Configurable Auto Press Key / Interval
+    - Character Rotation Lock
+
+    Notes:
+    - Executor input API support may vary.
+    - Use only where permitted by the game.
 ]]
 
 --// 1. SERVICES
@@ -41,6 +53,15 @@ local lagEnabled = false
 local fpsEnabled = true
 local antiAfkEnabled = false
 local tpEnabled = false
+
+local autoPressEnabled = false
+local autoPressKey = "E"
+local autoPressInterval = 2
+local rightHeld = false
+
+local rotationEnabled = false
+local rotationHumanoid = nil
+local rotationOriginal = nil
 
 local desiredShadows = Lighting.GlobalShadows
 local saved = {}
@@ -95,7 +116,7 @@ local function optimize(obj)
     end)
 end
 
---// 6. RESTORE
+--// 6. RESTORE ANTI-LAG
 local function restore()
     lagEnabled = false
     scanId += 1
@@ -123,7 +144,6 @@ local function restore()
 
     table.clear(saved)
 
-    -- Respect the current Shadows toggle
     pcall(function()
         Lighting.GlobalShadows = desiredShadows
     end)
@@ -182,11 +202,149 @@ local function enableLag()
     end)
 end
 
---// 8. RAYFIELD WINDOW
+--// 8. AUTO INPUT SERVICES
+local VirtualInputManager
+pcall(function()
+    VirtualInputManager =
+        game:GetService("VirtualInputManager")
+end)
+
+local function sendRightClick(isDown)
+    if not VirtualInputManager then
+        warn("[mixmay] VirtualInputManager unavailable")
+        return false
+    end
+
+    local ok = pcall(function()
+        local pos = UserInputService:GetMouseLocation()
+
+        -- Button 1 = right mouse button
+        VirtualInputManager:SendMouseButtonEvent(
+            pos.X,
+            pos.Y,
+            1,
+            isDown,
+            game
+        )
+    end)
+
+    return ok
+end
+
+local function setRightHeld(enabled)
+    if enabled == rightHeld then return end
+
+    if enabled then
+        if sendRightClick(true) then
+            rightHeld = true
+            print("[mixmay] Right click held")
+        else
+            warn("[mixmay] Could not hold right click")
+        end
+    else
+        -- Release even if the executor may have lost input state
+        sendRightClick(false)
+        rightHeld = false
+    end
+end
+
+local function pressKeyOnce(keyName)
+    if not alive or not VirtualInputManager then
+        return
+    end
+
+    local keyCode = Enum.KeyCode[keyName]
+    if not keyCode then
+        warn("[mixmay] Invalid key: " .. tostring(keyName))
+        return
+    end
+
+    local ok = pcall(function()
+        VirtualInputManager:SendKeyEvent(
+            true, keyCode, false, game
+        )
+
+        task.wait(0.05)
+
+        VirtualInputManager:SendKeyEvent(
+            false, keyCode, false, game
+        )
+    end)
+
+    if not ok then
+        -- Try to release the key if an error occurs
+        pcall(function()
+            VirtualInputManager:SendKeyEvent(
+                false, keyCode, false, game
+            )
+        end)
+
+        warn("[mixmay] Auto Press failed")
+    end
+end
+
+--// 9. CHARACTER ROTATION LOCK
+local function applyRotationLock()
+    if not alive or not rotationEnabled then return end
+
+    local character = LocalPlayer.Character
+    if not character then return end
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+
+    -- Save the original value for each character
+    if rotationHumanoid ~= humanoid then
+        rotationHumanoid = humanoid
+        rotationOriginal = humanoid.AutoRotate
+    end
+
+    pcall(function()
+        humanoid.AutoRotate = false
+    end)
+end
+
+local function setRotationLock(enabled)
+    rotationEnabled = enabled
+
+    if enabled then
+        applyRotationLock()
+    else
+        if rotationHumanoid and rotationOriginal ~= nil then
+            pcall(function()
+                if rotationHumanoid.Parent then
+                    rotationHumanoid.AutoRotate =
+                        rotationOriginal
+                end
+            end)
+        end
+
+        rotationHumanoid = nil
+        rotationOriginal = nil
+    end
+end
+
+connections.characterAdded =
+    LocalPlayer.CharacterAdded:Connect(function(character)
+        if not alive or not rotationEnabled then return end
+
+        task.spawn(function()
+            local humanoid =
+                character:WaitForChild("Humanoid", 10)
+
+            if not alive or not rotationEnabled or not humanoid then
+                return
+            end
+
+            applyRotationLock()
+        end)
+    end)
+
+--// 10. RAYFIELD WINDOW
 local Window = Rayfield:CreateWindow({
-    Name = "mixmay_Hab_V1.7",
+    Name = "mixmay_Hab_V1.8",
     LoadingTitle = "mixmay_Hab",
-    LoadingSubtitle = "Performance Menu",
+    LoadingSubtitle = "Performance + Auto Input",
     ConfigurationSaving = {
         Enabled = false
     },
@@ -206,7 +364,7 @@ local UtilityTab = Window:CreateTab(
     "settings"
 )
 
---// 9. FPS COUNTER
+--// 11. FPS COUNTER
 local FPSLabel = PerformanceTab:CreateLabel("FPS: --")
 
 PerformanceTab:CreateToggle({
@@ -215,6 +373,7 @@ PerformanceTab:CreateToggle({
     Flag = "FPSCounter",
     Callback = function(value)
         fpsEnabled = value
+
         if not value then
             pcall(function()
                 FPSLabel:Set("FPS Counter: OFF")
@@ -244,7 +403,7 @@ connections.render = RunService.RenderStepped:Connect(function(dt)
     end
 end)
 
---// 10. ANTI-LAG TOGGLE
+--// 12. ANTI-LAG TOGGLE
 PerformanceTab:CreateToggle({
     Name = "Anti-Lag",
     CurrentValue = false,
@@ -260,7 +419,7 @@ PerformanceTab:CreateToggle({
     end
 })
 
---// 11. SHADOWS
+--// 13. SHADOWS
 PerformanceTab:CreateToggle({
     Name = "Shadows",
     CurrentValue = desiredShadows,
@@ -268,7 +427,6 @@ PerformanceTab:CreateToggle({
     Callback = function(value)
         desiredShadows = value
 
-        -- Anti-Lag temporarily disables shadows
         if not lagEnabled then
             pcall(function()
                 Lighting.GlobalShadows = value
@@ -277,7 +435,7 @@ PerformanceTab:CreateToggle({
     end
 })
 
---// 12. ANTI-AFK
+--// 14. ANTI-AFK
 UtilityTab:CreateToggle({
     Name = "Anti-AFK",
     CurrentValue = false,
@@ -296,7 +454,7 @@ connections.idled = LocalPlayer.Idled:Connect(function()
     end)
 end)
 
---// 13. MOUSE TELEPORT
+--// 15. MOUSE TELEPORT
 UtilityTab:CreateToggle({
     Name = "Mouse TP",
     CurrentValue = false,
@@ -308,46 +466,153 @@ UtilityTab:CreateToggle({
 
 UtilityTab:CreateLabel("Press Left Ctrl to teleport")
 
+--// 16. AUTO INPUT MENU
+UtilityTab:CreateSection("Auto Input")
+
+UtilityTab:CreateLabel(
+    "V = Toggle Right Click Hold"
+)
+
+UtilityTab:CreateLabel(
+    "Z = Toggle Auto Press"
+)
+
+UtilityTab:CreateDropdown({
+    Name = "Auto Press Key",
+    Options = {
+        "E", "F", "G", "R", "T",
+        "Q", "X", "C", "V", "B",
+        "One", "Two", "Three", "Four"
+    },
+    CurrentOption = {"E"},
+    MultipleOptions = false,
+    Flag = "AutoPressKey",
+    Callback = function(option)
+        local selected = option
+
+        if typeof(option) == "table" then
+            selected = option[1]
+        end
+
+        if typeof(selected) == "string"
+            and Enum.KeyCode[selected] then
+            autoPressKey = selected
+        end
+    end
+})
+
+UtilityTab:CreateSlider({
+    Name = "Auto Press Interval",
+    Range = {1, 30},
+    Increment = 1,
+    Suffix = "sec",
+    CurrentValue = 2,
+    Flag = "AutoPressInterval",
+    Callback = function(value)
+        autoPressInterval = math.clamp(value, 1, 30)
+    end
+})
+
+UtilityTab:CreateToggle({
+    Name = "Auto Press (Z)",
+    CurrentValue = false,
+    Flag = "AutoPress",
+    Callback = function(value)
+        autoPressEnabled = value
+    end
+})
+
+UtilityTab:CreateToggle({
+    Name = "Character Rotation Lock",
+    CurrentValue = false,
+    Flag = "RotationLock",
+    Callback = function(value)
+        setRotationLock(value)
+    end
+})
+
+--// 17. SHARED KEYBOARD INPUT
 connections.input = UserInputService.InputBegan:Connect(
     function(input, gameProcessed)
-        if not alive or gameProcessed or not tpEnabled then
-            return
+        if not alive or gameProcessed then return end
+
+        if input.KeyCode == Enum.KeyCode.V then
+            setRightHeld(not rightHeld)
+
+        elseif input.KeyCode == Enum.KeyCode.Z then
+            autoPressEnabled = not autoPressEnabled
+
+        elseif input.KeyCode == Enum.KeyCode.LeftControl
+            and tpEnabled then
+
+            pcall(function()
+                local character = LocalPlayer.Character
+                if not character then return end
+
+                local root =
+                    character:FindFirstChild("HumanoidRootPart")
+                local humanoid =
+                    character:FindFirstChildOfClass("Humanoid")
+
+                if not root or not humanoid
+                    or humanoid.Health <= 0 then
+                    return
+                end
+
+                local target = Mouse.Hit.Position
+
+                root.CFrame = CFrame.new(
+                    target + Vector3.new(0, 2.5, 0)
+                )
+            end)
         end
-
-        if input.KeyCode ~= Enum.KeyCode.LeftControl then
-            return
-        end
-
-        pcall(function()
-            local character = LocalPlayer.Character
-            if not character then return end
-
-            local root = character:FindFirstChild("HumanoidRootPart")
-            local humanoid = character:FindFirstChildOfClass("Humanoid")
-
-            if not root or not humanoid or humanoid.Health <= 0 then
-                return
-            end
-
-            local target = Mouse.Hit.Position
-            root.CFrame = CFrame.new(
-                target + Vector3.new(0, 2.5, 0)
-            )
-        end)
     end
 )
 
---// 14. SHUTDOWN
+--// 18. AUTO PRESS LOOP
+task.spawn(function()
+    while alive do
+        if autoPressEnabled then
+            pressKeyOnce(autoPressKey)
+
+            local waitTime = autoPressInterval
+            local started = os.clock()
+
+            while alive
+                and autoPressEnabled
+                and os.clock() - started < waitTime do
+                task.wait(0.1)
+            end
+        else
+            task.wait(0.1)
+        end
+    end
+end)
+
+--// 19. SHUTDOWN / CLEANUP
 local function cleanup()
     if not alive then return end
 
+    -- Stop loops and new input first
     alive = false
+    autoPressEnabled = false
     antiAfkEnabled = false
     tpEnabled = false
     fpsEnabled = false
 
+    -- Release held mouse button
+    if rightHeld then
+        sendRightClick(false)
+        rightHeld = false
+    end
+
+    -- Restore character rotation
+    setRotationLock(false)
+
+    -- Restore Anti-Lag changes
     restore()
 
+    -- Disconnect all remaining events
     for _, connection in pairs(connections) do
         pcall(function()
             connection:Disconnect()
@@ -359,6 +624,8 @@ local function cleanup()
     pcall(function()
         Rayfield:Destroy()
     end)
+
+    print("[mixmay] V1.8 cleaned up")
 end
 
 UtilityTab:CreateButton({
@@ -366,4 +633,4 @@ UtilityTab:CreateButton({
     Callback = cleanup
 })
 
-print("[mixmay] V1.7 Rayfield loaded")
+print("[mixmay] V1.8 Rayfield loaded")
